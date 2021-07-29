@@ -231,3 +231,34 @@
     plus-emph-style = syntax bold "#007800"
     plus-style = syntax "#004433"
     whitespace-error-style = "#280050"
+
+[delta "fratercula-arctica"]
+    # author: https://github.com/ynavott
+    commit-decoration-style = 232 172 box
+    commit-style = 232 bold italic 172
+    dark = true
+    file-added-label = [+]
+    file-copied-label = [C]
+    file-decoration-style = none
+    file-modified-label = [M]
+    file-removed-label = [-]
+    file-renamed-label = [R]
+    file-style = 232 bold 184
+    hunk-header-decoration-style = omit
+    hunk-header-style = syntax bold brightblack
+    line-numbers = true
+    line-numbers-left-format = "{nm:>1}┊"
+    line-numbers-left-style = red
+    line-numbers-minus-style = red bold normal
+    line-numbers-plus-style = green bold normal
+    line-numbers-right-format = "{np:>1}┊"
+    line-numbers-right-style = green
+    line-numbers-zero-style = "#999999" italic
+    minus-emph-style = syntax bold "#780000"
+    minus-style = syntax "#400000"
+    plus-emph-style = syntax bold "#007800"
+    plus-style = syntax "#004000"
+    syntax-theme = Nord
+    whitespace-error-style = "#280050" reverse
+    zero-style = syntax
+    hyperlinks = false
