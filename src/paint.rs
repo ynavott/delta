@@ -20,7 +20,7 @@ pub struct Painter<'a> {
     pub plus_lines: Vec<(String, State)>,
     pub writer: &'a mut dyn Write,
     pub syntax: &'a SyntaxReference,
-    pub highlighter: HighlightLines<'a>,
+    pub highlighter: Option<HighlightLines<'a>>,
     pub config: &'a config::Config,
     pub output_buffer: String,
     pub line_numbers_data: line_numbers::LineNumbersData<'a>,
@@ -29,8 +29,6 @@ pub struct Painter<'a> {
 impl<'a> Painter<'a> {
     pub fn new(writer: &'a mut dyn Write, config: &'a config::Config) -> Self {
         let default_syntax = Self::get_syntax(&config.syntax_set, None);
-        // TODO: Avoid doing this.
-        let dummy_highlighter = HighlightLines::new(default_syntax, &config.syntax_dummy_theme);
 
         let line_numbers_data = if config.line_numbers {
             line_numbers::LineNumbersData::from_format_strings(
@@ -45,7 +43,7 @@ impl<'a> Painter<'a> {
             plus_lines: Vec::new(),
             output_buffer: String::new(),
             syntax: default_syntax,
-            highlighter: dummy_highlighter,
+            highlighter: None,
             writer,
             config,
             line_numbers_data,
@@ -69,7 +67,7 @@ impl<'a> Painter<'a> {
 
     pub fn set_highlighter(&mut self) {
         if let Some(ref syntax_theme) = self.config.syntax_theme {
-            self.highlighter = HighlightLines::new(self.syntax, &syntax_theme)
+            self.highlighter = Some(HighlightLines::new(self.syntax, syntax_theme))
         };
     }
 
@@ -127,13 +125,13 @@ impl<'a> Painter<'a> {
         let minus_line_syntax_style_sections = Self::get_syntax_style_sections_for_lines(
             &self.minus_lines,
             &State::HunkMinus(None),
-            &mut self.highlighter,
+            self.highlighter.as_mut(),
             self.config,
         );
         let plus_line_syntax_style_sections = Self::get_syntax_style_sections_for_lines(
             &self.plus_lines,
             &State::HunkPlus(None),
-            &mut self.highlighter,
+            self.highlighter.as_mut(),
             self.config,
         );
         let (minus_line_diff_style_sections, plus_line_diff_style_sections, line_alignment) =
@@ -204,8 +202,8 @@ impl<'a> Painter<'a> {
         let syntax_style_sections = Painter::get_syntax_style_sections_for_lines(
             &lines,
             &state,
-            &mut self.highlighter,
-            &self.config,
+            self.highlighter.as_mut(),
+            self.config,
         );
         let diff_style_sections = vec![(self.config.zero_style, lines[0].0.as_str())]; // TODO: compute style from state
 
@@ -293,6 +291,35 @@ impl<'a> Painter<'a> {
         }
     }
 
+    /// Write painted line to the output buffer, with syntax-highlighting and `style` superimposed.
+    pub fn syntax_highlight_and_paint_line(
+        &mut self,
+        line: &str,
+        style: Style,
+        state: State,
+        background_color_extends_to_terminal_width: bool,
+    ) {
+        let lines = vec![(self.expand_tabs(line.graphemes(true)), state.clone())];
+        let syntax_style_sections = Painter::get_syntax_style_sections_for_lines(
+            &lines,
+            &state,
+            self.highlighter.as_mut(),
+            self.config,
+        );
+        let diff_style_sections = vec![vec![(style, lines[0].0.as_str())]]; // TODO: compute style from state
+        Painter::paint_lines(
+            syntax_style_sections,
+            diff_style_sections,
+            [state].iter(),
+            &mut self.output_buffer,
+            self.config,
+            &mut None,
+            None,
+            None,
+            Some(background_color_extends_to_terminal_width),
+        );
+    }
+
     /// Determine whether the terminal should fill the line rightwards with a background color, and
     /// the style for doing so.
     pub fn get_should_right_fill_background_color_and_fill_style(
@@ -331,6 +358,7 @@ impl<'a> Painter<'a> {
                     (config.plus_style, config.plus_non_emph_style)
                 }
             }
+            State::Blame(_) => (diff_sections[0].0, diff_sections[0].0),
             _ => (config.null_style, config.null_style),
         };
         let fill_style = if style_sections_contain_more_than_one_style(diff_sections) {
@@ -381,9 +409,9 @@ impl<'a> Painter<'a> {
         painted_prefix: Option<ansi_term::ANSIString>,
         config: &config::Config,
     ) -> (String, bool) {
-        let output_line_numbers = config.line_numbers && line_numbers_data.is_some();
-        let mut handled_prefix = false;
         let mut ansi_strings = Vec::new();
+
+        let output_line_numbers = config.line_numbers && line_numbers_data.is_some();
         if output_line_numbers {
             ansi_strings.extend(line_numbers::format_and_paint_line_numbers(
                 line_numbers_data.as_mut().unwrap(),
@@ -407,27 +435,40 @@ impl<'a> Painter<'a> {
             }
             _ => {}
         }
-        let mut is_empty = true;
-        for (section_style, mut text) in superimpose_style_sections(
+
+        let superimposed = superimpose_style_sections(
             syntax_sections,
             diff_sections,
             config.true_color,
             config.null_syntect_style,
-        ) {
-            if !handled_prefix {
-                if let Some(painted_prefix) = painted_prefix.clone() {
-                    ansi_strings.push(painted_prefix);
+        );
+
+        let mut handled_prefix = false;
+        for (section_style, text) in &superimposed {
+            let text = if handled_prefix {
+                &text
+            } else {
+                // Remove what was originally the +/- prefix, see `prepare()`, after
+                // (if requested) re-inserting it with proper styling.
+                if let Some(ref painted_prefix) = painted_prefix {
+                    ansi_strings.push(painted_prefix.clone());
                 }
+
                 if !text.is_empty() {
-                    text.remove(0);
+                    &text[1..]
+                } else {
+                    &text
                 }
-                handled_prefix = true;
-            }
+            };
+
             if !text.is_empty() {
                 ansi_strings.push(section_style.paint(text));
-                is_empty = false;
             }
+            handled_prefix = true;
         }
+
+        // Only if syntax is empty (implies diff empty) can a line actually be empty.
+        let is_empty = syntax_sections.is_empty();
         (ansi_term::ANSIStrings(&ansi_strings).to_string(), is_empty)
     }
 
@@ -452,8 +493,9 @@ impl<'a> Painter<'a> {
                 config.plus_style.is_syntax_highlighted
                     || config.plus_emph_style.is_syntax_highlighted
             }
-            State::HunkHeader => true,
+            State::HunkHeader(_, _) => true,
             State::HunkMinus(Some(_)) | State::HunkPlus(Some(_)) => false,
+            State::Blame(_) => true,
             _ => panic!(
                 "should_compute_syntax_highlighting is undefined for state {:?}",
                 state
@@ -464,20 +506,28 @@ impl<'a> Painter<'a> {
     pub fn get_syntax_style_sections_for_lines<'s>(
         lines: &'s [(String, State)],
         state: &State,
-        highlighter: &mut HighlightLines,
+        highlighter: Option<&mut HighlightLines>,
         config: &config::Config,
     ) -> Vec<Vec<(SyntectStyle, &'s str)>> {
-        let fake = !Painter::should_compute_syntax_highlighting(state, config);
         let mut line_sections = Vec::new();
-        for (line, _) in lines.iter() {
-            if fake {
-                line_sections.push(vec![(config.null_syntect_style, line.as_str())])
-            } else {
+        match (
+            highlighter,
+            Painter::should_compute_syntax_highlighting(state, config),
+        ) {
+            (Some(highlighter), true) => {
                 // The first character is a space injected by delta. See comment in
                 // Painter:::prepare.
-                let mut this_line_sections = highlighter.highlight(&line[1..], &config.syntax_set);
-                this_line_sections.insert(0, (config.null_syntect_style, &line[..1]));
-                line_sections.push(this_line_sections);
+                for (line, _) in lines.iter() {
+                    let mut this_line_sections =
+                        highlighter.highlight(&line[1..], &config.syntax_set);
+                    this_line_sections.insert(0, (config.null_syntect_style, &line[..1]));
+                    line_sections.push(this_line_sections);
+                }
+            }
+            _ => {
+                for (line, _) in lines.iter() {
+                    line_sections.push(vec![(config.null_syntect_style, line.as_str())])
+                }
             }
         }
         line_sections
@@ -496,11 +546,11 @@ impl<'a> Painter<'a> {
     ) {
         let (minus_lines, minus_styles): (Vec<&str>, Vec<Style>) = minus_lines
             .iter()
-            .map(|(s, t)| (s.as_str(), *config.get_style(&t)))
+            .map(|(s, t)| (s.as_str(), *config.get_style(t)))
             .unzip();
         let (plus_lines, plus_styles): (Vec<&str>, Vec<Style>) = plus_lines
             .iter()
-            .map(|(s, t)| (s.as_str(), *config.get_style(&t)))
+            .map(|(s, t)| (s.as_str(), *config.get_style(t)))
             .unzip();
         let mut diff_sections = edits::infer_edits(
             minus_lines,

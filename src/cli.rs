@@ -13,7 +13,7 @@ use crate::bat_utils::output::PagingMode;
 use crate::git_config::{GitConfig, GitConfigEntry};
 use crate::options;
 
-#[derive(StructOpt, Clone, Default)]
+#[derive(StructOpt, Default)]
 #[structopt(
     name = "delta",
     about = "A viewer for git and diff output",
@@ -419,6 +419,33 @@ pub struct Opt {
     /// (underline), 'ol' (overline), or the combination 'ul ol'.
     pub hunk_header_decoration_style: String,
 
+    /// Format string for git blame commit metadata. Available placeholders are
+    /// "{timestamp}", "{author}", and "{commit}".
+    #[structopt(
+        long = "blame-format",
+        default_value = "{timestamp:<15} {author:<15} {commit:<8} │ "
+    )]
+    pub blame_format: String,
+
+    /// Background colors used for git blame lines (space-separated string).
+    /// Lines added by the same commit are painted with the same color; colors
+    /// are recycled as needed.
+    #[structopt(long = "blame-palette", default_value = "#FFFFFF #DDDDDD #BBBBBB")]
+    pub blame_palette: String,
+
+    /// Format of `git blame` timestamp in raw git output received by delta.
+    #[structopt(
+        long = "blame-timestamp-format",
+        default_value = "%Y-%m-%d %H:%M:%S %z"
+    )]
+    pub blame_timestamp_format: String,
+
+    /// Default language used for syntax highlighting when this cannot be
+    /// inferred from a filename. It will typically make sense to set this in
+    /// per-repository git config ().git/config)
+    #[structopt(long = "default-language")]
+    pub default_language: Option<String>,
+
     /// The regular expression used to decide what a word is for the within-line highlight
     /// algorithm. For less fine-grained matching than the default try --word-diff-regex="\S+"
     /// --max-line-distance=1.0 (this is more similar to `git --word-diff`).
@@ -490,10 +517,13 @@ pub struct Opt {
     /// Text to display in front of a renamed file path.
     pub file_renamed_label: String,
 
+    #[structopt(long = "hunk-label", default_value = "")]
+    /// Text to display in front of a hunk header.
+    pub hunk_label: String,
+
     #[structopt(long = "max-line-length", default_value = "512")]
     /// Truncate lines longer than this. To prevent any truncation, set to zero. Note that
-    /// syntax-highlighting very long lines (e.g. minified .js) will be very slow if they are not
-    /// truncated.
+    /// delta will be slow on very long lines (e.g. minified .js) if truncation is disabled.
     pub max_line_length: usize,
 
     /// The width of underline/overline decorations. Use --width=variable to extend decorations and
@@ -626,6 +656,9 @@ pub struct Opt {
     pub computed: ComputedValues,
 
     #[structopt(skip)]
+    pub git_config: Option<GitConfig>,
+
+    #[structopt(skip)]
     pub git_config_entries: HashMap<String, GitConfigEntry>,
 }
 
@@ -637,7 +670,6 @@ pub struct ComputedValues {
     pub inspect_raw_lines: InspectRawLines,
     pub is_light_mode: bool,
     pub paging_mode: PagingMode,
-    pub syntax_dummy_theme: SyntaxTheme,
     pub syntax_set: SyntaxSet,
     pub syntax_theme: Option<SyntaxTheme>,
     pub true_color: bool,
@@ -675,13 +707,13 @@ impl Default for PagingMode {
 
 impl Opt {
     pub fn from_args_and_git_config(
-        git_config: &mut Option<GitConfig>,
+        git_config: Option<GitConfig>,
         assets: HighlightingAssets,
     ) -> Self {
         Self::from_clap_and_git_config(Self::clap().get_matches(), git_config, assets)
     }
 
-    pub fn from_iter_and_git_config<I>(iter: I, git_config: &mut Option<GitConfig>) -> Self
+    pub fn from_iter_and_git_config<I>(iter: I, git_config: Option<GitConfig>) -> Self
     where
         I: IntoIterator,
         I::Item: Into<OsString> + Clone,
@@ -692,12 +724,13 @@ impl Opt {
 
     fn from_clap_and_git_config(
         arg_matches: clap::ArgMatches,
-        git_config: &mut Option<GitConfig>,
+        mut git_config: Option<GitConfig>,
         assets: HighlightingAssets,
     ) -> Self {
         let mut opt = Opt::from_clap(&arg_matches);
         options::rewrite::apply_rewrite_rules(&mut opt, &arg_matches);
-        options::set::set_options(&mut opt, git_config, &arg_matches, assets);
+        options::set::set_options(&mut opt, &mut git_config, &arg_matches, assets);
+        opt.git_config = git_config;
         opt
     }
 

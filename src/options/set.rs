@@ -13,7 +13,7 @@ use crate::config;
 use crate::env;
 use crate::errors::*;
 use crate::features;
-use crate::git_config::{GitConfig, GitConfigEntry, GitRemoteRepo};
+use crate::git_config::{GitConfig, GitConfigEntry};
 use crate::options::option_value::{OptionValue, ProvenancedOptionValue};
 use crate::options::theme;
 
@@ -90,12 +90,8 @@ pub fn set_options(
     let features = gather_features(opt, &builtin_features, git_config);
     opt.features = features.join(" ");
 
-    set_widths(opt, git_config, arg_matches, &option_names);
-
     // Set light, dark, and syntax-theme.
-    set_true_color(opt);
     set__light__dark__syntax_theme__options(opt, git_config, arg_matches, &option_names);
-    theme::set__is_light_mode__syntax_theme__syntax_set(opt, assets);
 
     // HACK: make minus-line styles have syntax-highlighting iff side-by-side.
     if features.contains(&"side-by-side".to_string()) {
@@ -125,10 +121,14 @@ pub fn set_options(
 
     set_options!(
         [
+            blame_format,
+            blame_palette,
+            blame_timestamp_format,
             color_only,
             commit_decoration_style,
             commit_regex,
             commit_style,
+            default_language,
             diff_stat_align_width,
             file_added_label,
             file_copied_label,
@@ -136,6 +136,7 @@ pub fn set_options(
             file_modified_label,
             file_removed_label,
             file_renamed_label,
+            hunk_label,
             file_style,
             hunk_header_decoration_style,
             hunk_header_file_style,
@@ -192,6 +193,10 @@ pub fn set_options(
         true
     );
 
+    // Setting ComputedValues
+    set_widths(opt);
+    set_true_color(opt);
+    theme::set__is_light_mode__syntax_theme__syntax_set(opt, assets);
     opt.computed.inspect_raw_lines =
         cli::InspectRawLines::from_str(&opt.inspect_raw_lines).unwrap();
     opt.computed.paging_mode = parse_paging_mode(&opt.paging_mode);
@@ -221,7 +226,7 @@ fn set__light__dark__syntax_theme__options(
         }
     };
     let empty_builtin_features = HashMap::new();
-    validate_light_and_dark(&opt);
+    validate_light_and_dark(opt);
     if !(opt.light || opt.dark) {
         set_options!(
             [dark, light],
@@ -233,7 +238,7 @@ fn set__light__dark__syntax_theme__options(
             false
         );
     }
-    validate_light_and_dark(&opt);
+    validate_light_and_dark(opt);
     set_options!(
         [syntax_theme],
         opt,
@@ -304,7 +309,7 @@ fn gather_features(
     // Gather features from command line.
     if let Some(git_config) = git_config {
         for feature in split_feature_string(&opt.features.to_lowercase()) {
-            gather_features_recursively(feature, &mut features, &builtin_features, opt, git_config);
+            gather_features_recursively(feature, &mut features, builtin_features, opt, git_config);
         }
     } else {
         for feature in split_feature_string(&opt.features.to_lowercase()) {
@@ -315,33 +320,28 @@ fn gather_features(
     // Gather builtin feature flags supplied on command line.
     // TODO: Iterate over programatically-obtained names of builtin features.
     if opt.raw {
-        gather_builtin_features_recursively("raw", &mut features, &builtin_features, opt);
+        gather_builtin_features_recursively("raw", &mut features, builtin_features, opt);
     }
     if opt.color_only {
-        gather_builtin_features_recursively("color-only", &mut features, &builtin_features, opt);
+        gather_builtin_features_recursively("color-only", &mut features, builtin_features, opt);
     }
     if opt.diff_highlight {
-        gather_builtin_features_recursively(
-            "diff-highlight",
-            &mut features,
-            &builtin_features,
-            opt,
-        );
+        gather_builtin_features_recursively("diff-highlight", &mut features, builtin_features, opt);
     }
     if opt.diff_so_fancy {
-        gather_builtin_features_recursively("diff-so-fancy", &mut features, &builtin_features, opt);
+        gather_builtin_features_recursively("diff-so-fancy", &mut features, builtin_features, opt);
     }
     if opt.hyperlinks {
-        gather_builtin_features_recursively("hyperlinks", &mut features, &builtin_features, opt);
+        gather_builtin_features_recursively("hyperlinks", &mut features, builtin_features, opt);
     }
     if opt.line_numbers {
-        gather_builtin_features_recursively("line-numbers", &mut features, &builtin_features, opt);
+        gather_builtin_features_recursively("line-numbers", &mut features, builtin_features, opt);
     }
     if opt.navigate {
-        gather_builtin_features_recursively("navigate", &mut features, &builtin_features, opt);
+        gather_builtin_features_recursively("navigate", &mut features, builtin_features, opt);
     }
     if opt.side_by_side {
-        gather_builtin_features_recursively("side-by-side", &mut features, &builtin_features, opt);
+        gather_builtin_features_recursively("side-by-side", &mut features, builtin_features, opt);
     }
 
     if let Some(git_config) = git_config {
@@ -352,7 +352,7 @@ fn gather_features(
                     gather_features_recursively(
                         feature,
                         &mut features,
-                        &builtin_features,
+                        builtin_features,
                         opt,
                         git_config,
                     )
@@ -363,7 +363,7 @@ fn gather_features(
         gather_builtin_features_from_flags_in_gitconfig(
             "delta",
             &mut features,
-            &builtin_features,
+            builtin_features,
             opt,
             git_config,
         );
@@ -514,27 +514,9 @@ fn parse_paging_mode(paging_mode_string: &str) -> PagingMode {
     }
 }
 
-fn set_widths(
-    opt: &mut cli::Opt,
-    git_config: &mut Option<GitConfig>,
-    arg_matches: &clap::ArgMatches,
-    option_names: &HashMap<&str, &str>,
-) {
+fn set_widths(opt: &mut cli::Opt) {
     // Allow one character in case e.g. `less --status-column` is in effect. See #41 and #10.
     opt.computed.available_terminal_width = (Term::stdout().size().1 - 1) as usize;
-
-    let empty_builtin_features = HashMap::new();
-    if opt.width.is_none() {
-        set_options!(
-            [width],
-            opt,
-            &empty_builtin_features,
-            git_config,
-            arg_matches,
-            option_names,
-            false
-        );
-    }
 
     let (decorations_width, background_color_extends_to_terminal_width) = match opt.width.as_deref()
     {
@@ -564,6 +546,7 @@ fn set_true_color(opt: &mut cli::Opt) {
             opt.true_color = _24_bit_color.clone();
         }
     }
+
     opt.computed.true_color = match opt.true_color.as_ref() {
         "always" => true,
         "never" => false,
@@ -585,21 +568,10 @@ fn is_truecolor_terminal() -> bool {
 }
 
 fn set_git_config_entries(opt: &mut cli::Opt, git_config: &mut GitConfig) {
-    // Styles
     for key in &["color.diff.old", "color.diff.new"] {
         if let Some(style_string) = git_config.get::<String>(key) {
             opt.git_config_entries
                 .insert(key.to_string(), GitConfigEntry::Style(style_string));
-        }
-    }
-
-    // Strings
-    for key in &["remote.origin.url"] {
-        if let Some(string) = git_config.get::<String>(key) {
-            if let Ok(repo) = GitRemoteRepo::from_str(&string) {
-                opt.git_config_entries
-                    .insert(key.to_string(), GitConfigEntry::GitRemote(repo));
-            }
         }
     }
 
@@ -631,6 +603,7 @@ pub mod tests {
     commit-decoration-style = black black
     commit-style = black black
     dark = false
+    default-language = rs
     diff-highlight = true
     diff-so-fancy = true
     features = xxxyyyzzz
@@ -688,6 +661,7 @@ pub mod tests {
         assert_eq!(opt.commit_decoration_style, "black black");
         assert_eq!(opt.commit_style, "black black");
         assert_eq!(opt.dark, false);
+        assert_eq!(opt.default_language, Some("rs".to_owned()));
         // TODO: should set_options not be called on any feature flags?
         // assert_eq!(opt.diff_highlight, true);
         // assert_eq!(opt.diff_so_fancy, true);
@@ -726,6 +700,7 @@ pub mod tests {
         assert_eq!(opt.side_by_side, true);
         assert_eq!(opt.syntax_theme, Some("xxxyyyzzz".to_string()));
         assert_eq!(opt.tab_width, 77);
+        assert_eq!(opt.true_color, "never");
         assert_eq!(opt.whitespace_error_style, "black black");
         assert_eq!(opt.width, Some("77".to_string()));
         assert_eq!(opt.tokenization_regex, "xxxyyyzzz");

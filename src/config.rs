@@ -15,17 +15,21 @@ use crate::delta::State;
 use crate::env;
 use crate::features::navigate;
 use crate::features::side_by_side;
-use crate::git_config::GitConfigEntry;
+use crate::git_config::{GitConfig, GitConfigEntry};
 use crate::style::{self, Style};
 
 pub struct Config {
     pub available_terminal_width: usize,
     pub background_color_extends_to_terminal_width: bool,
+    pub blame_format: String,
+    pub blame_palette: Vec<String>,
+    pub blame_timestamp_format: String,
     pub commit_style: Style,
     pub color_only: bool,
     pub commit_regex: Regex,
     pub cwd_relative_to_repo_root: Option<String>,
     pub decorations_width: cli::Width,
+    pub default_language: Option<String>,
     pub diff_stat_align_width: usize,
     pub error_exit_code: i32,
     pub file_added_label: String,
@@ -33,7 +37,9 @@ pub struct Config {
     pub file_modified_label: String,
     pub file_removed_label: String,
     pub file_renamed_label: String,
+    pub hunk_label: String,
     pub file_style: Style,
+    pub git_config: Option<GitConfig>,
     pub git_config_entries: HashMap<String, GitConfigEntry>,
     pub hunk_header_file_style: Style,
     pub hunk_header_line_number_style: Style,
@@ -97,7 +103,8 @@ impl Config {
             State::HunkPlus(_) => &self.plus_style,
             State::CommitMeta => &self.commit_style,
             State::FileMeta => &self.file_style,
-            State::HunkHeader => &self.hunk_header_style,
+            State::HunkHeader(_, _) => &self.hunk_header_style,
+            State::SubmoduleLog => &self.file_style,
             _ => delta_unreachable("Unreachable code reached in get_style."),
         }
     }
@@ -178,6 +185,7 @@ impl From<cli::Opt> for Config {
         let file_modified_label = opt.file_modified_label;
         let file_removed_label = opt.file_removed_label;
         let file_renamed_label = opt.file_renamed_label;
+        let hunk_label = opt.hunk_label;
 
         let navigate_regexp = if opt.navigate || opt.show_themes {
             Some(navigate::make_navigate_regexp(
@@ -186,6 +194,7 @@ impl From<cli::Opt> for Config {
                 &file_added_label,
                 &file_removed_label,
                 &file_renamed_label,
+                &hunk_label,
             ))
         } else {
             None
@@ -196,11 +205,19 @@ impl From<cli::Opt> for Config {
             background_color_extends_to_terminal_width: opt
                 .computed
                 .background_color_extends_to_terminal_width,
+            blame_format: opt.blame_format,
+            blame_palette: opt
+                .blame_palette
+                .split_whitespace()
+                .map(|s| s.to_owned())
+                .collect::<Vec<String>>(),
+            blame_timestamp_format: opt.blame_timestamp_format,
             commit_style,
             color_only: opt.color_only,
             commit_regex,
             cwd_relative_to_repo_root: std::env::var("GIT_PREFIX").ok(),
             decorations_width: opt.computed.decorations_width,
+            default_language: opt.default_language,
             diff_stat_align_width: opt.diff_stat_align_width,
             error_exit_code: 2, // Use 2 for error because diff uses 0 and 1 for non-error.
             file_added_label,
@@ -208,7 +225,9 @@ impl From<cli::Opt> for Config {
             file_modified_label,
             file_removed_label,
             file_renamed_label,
+            hunk_label,
             file_style,
+            git_config: opt.git_config,
             git_config_entries: opt.git_config_entries,
             hunk_header_file_style,
             hunk_header_line_number_style,
@@ -495,4 +514,38 @@ pub fn delta_unreachable(message: &str) -> ! {
         message
     );
     process::exit(error_exit_code);
+}
+
+#[cfg(test)]
+pub mod tests {
+    use crate::bat_utils::output::PagingMode;
+    use crate::cli;
+    use crate::tests::integration_test_utils;
+    use std::fs::remove_file;
+
+    #[test]
+    fn test_get_computed_values_from_config() {
+        let git_config_contents = b"
+[delta]
+    true-color = never
+    width = 100
+    inspect-raw-lines = true
+    paging = never
+    syntax-theme = None
+";
+        let git_config_path = "delta__test_get_true_color_from_config.gitconfig";
+        let config = integration_test_utils::make_config_from_args_and_git_config(
+            &[],
+            Some(git_config_contents),
+            Some(git_config_path),
+        );
+        assert_eq!(config.true_color, false);
+        assert_eq!(config.decorations_width, cli::Width::Fixed(100));
+        assert_eq!(config.background_color_extends_to_terminal_width, true);
+        assert_eq!(config.inspect_raw_lines, cli::InspectRawLines::True);
+        assert_eq!(config.paging_mode, PagingMode::Never);
+        assert!(config.syntax_theme.is_none());
+        // syntax_set doesn't depend on gitconfig.
+        remove_file(git_config_path).unwrap();
+    }
 }
